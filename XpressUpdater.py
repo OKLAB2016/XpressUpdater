@@ -106,7 +106,7 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
             'LightLastScan': light_lastscan,
             'HeavyFirstScan': heavy_firstscan,
             'HeavyLastScan': heavy_lastscan,
-            'XMLFil': mzml_link_path,
+            'XMLFile': mzml_link_path,
             'ChargeState': assumed_charge,
             'LightMass': light_mass,
             'HeavyMass': heavy_mass,
