@@ -15,6 +15,8 @@ def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, n
 
     print("Start processing...")
 
+    had_errors = False
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_jobs) as executor:
         # Parse input XML file
         ET.register_namespace("", namespace["ns"])
@@ -25,6 +27,7 @@ def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, n
 
         futures = []
         for spectrum_query in spectrum_queries:
+            spectrum = spectrum_query.get('spectrum')
             # Search for nested xpressratio_result elements
             xpress_results = spectrum_query.findall('.//ns:analysis_result[@analysis="xpress"]/ns:xpressratio_result', namespace)
 
@@ -36,11 +39,18 @@ def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, n
         for i, future in enumerate(concurrent.futures.as_completed(futures)):
             try:
                 result = future.result()
-                print(result)
+                print(f"{spectrum} - {result}")
             except Exception as e:
-                print(f"Error: {e}")
-        tree.write(output_path, encoding='utf-8', xml_declaration=True)
-    print("Processing complete.")
+                print(f"{spectrum} - Error: {e}")
+                had_errors = True
+                break
+
+    if not had_errors:
+        try:
+            tree.write(output_path, encoding='utf-8', xml_declaration=True)
+            print("Processing complete.")
+        except Exception as e:
+            print(f"Error: {e}")
 
 def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mzml_path, parser_path, img_dir, rank):
     # Extract relevant attributes from xpress_result
@@ -71,7 +81,7 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
     with tempfile.TemporaryDirectory() as temp_dir:
         reduced_xml_path = os.path.join(temp_dir, "reduced_xml_to_modify.xml")
         mzml_link_path = os.path.join(temp_dir, "spectra.mzML")
-        os.link(mzml_path, mzml_link_path)
+        os.symlink(os.path.realpath(mzml_path), mzml_link_path)
 
         # Create a reduced XML file containing only the necessary elements
         reduced_xml = ET.Element("msms_pipeline_analysis")
@@ -111,35 +121,30 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
         query_string = '&'.join(['{}={}'.format(k,v) for k,v in query.items()])
 
         # Call XPressPeptideUpdateParser
-        try:
-            result = subprocess.run([parser_path], env={'QUERY_STRING': query_string, 'REQUEST_METHOD': 'GET'}, capture_output=True, text=True, check=True)
-            # Check if the result contains 'ratio updated'
-            if 'ratio updated' in result.stdout:
-                # Parse the modified reduced XML file
-                modified_tree = ET.parse(reduced_xml_path)
-                modified_root = modified_tree.getroot()
-                modified_xpress_result = modified_root.find('.//xpressratio_result')
+        result = subprocess.run([parser_path], env={'QUERY_STRING': query_string, 'REQUEST_METHOD': 'GET'}, capture_output=True, text=True, check=True)
+        # Check if the result contains 'ratio updated'
+        if 'ratio updated' in result.stdout:
+            # Parse the modified reduced XML file
+            modified_tree = ET.parse(reduced_xml_path)
+            modified_root = modified_tree.getroot()
+            modified_xpress_result = modified_root.find('.//xpressratio_result')
 
-                new_decimal_ratio = modified_xpress_result.get('decimal_ratio')
+            new_decimal_ratio = modified_xpress_result.get('decimal_ratio')
 
-                # Update the original XML file with the modified values
-                for attrib in modified_xpress_result.attrib:
-                    xpress_result.set(attrib, modified_xpress_result.get(attrib))
-                xpress_result.set("heavy2light_ratio", f"1:{new_decimal_ratio}")
+            # Update the original XML file with the modified values
+            for attrib in modified_xpress_result.attrib:
+                xpress_result.set(attrib, modified_xpress_result.get(attrib))
+            xpress_result.set("heavy2light_ratio", f"1:{new_decimal_ratio}")
 
-                response = f"{spectrum} - ratio updated from {decimal_ratio} to {new_decimal_ratio}"
+            response = f"ratio updated from {decimal_ratio} to {new_decimal_ratio}"
 
-                light_png_src, heavy_png_src = img_pattern.findall(result.stdout)
-                light_png_dest = os.path.join(img_dir, f"{spectrum}_{rank}_0.png")
-                heavy_png_dest = os.path.join(img_dir, f"{spectrum}_{rank}_1.png")
-                shutil.move(light_png_src, light_png_dest)
-                shutil.move(heavy_png_src, heavy_png_dest)
-
-            else:
-                response = f"{spectrum} - error running XPressPeptideUpdateParser"
-
-        except subprocess.CalledProcessError as e:
-            response = f"{spectrum} - error: {e}"
+            light_png_src, heavy_png_src = img_pattern.findall(result.stdout)
+            light_png_dest = os.path.join(img_dir, f"{spectrum}_{rank}_0.png")
+            heavy_png_dest = os.path.join(img_dir, f"{spectrum}_{rank}_1.png")
+            shutil.move(light_png_src, light_png_dest)
+            shutil.move(heavy_png_src, heavy_png_dest)
+        else:
+            raise Exception(f"error running XPressPeptideUpdateParser")
 
         return response
 
