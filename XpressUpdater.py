@@ -10,6 +10,7 @@ import shutil
 namespace = {"ns": "http://regis-web.systemsbiology.net/pepXML"}
 
 img_pattern = re.compile(r'show_tmp_pngfile\.pl\?file=(.+?\.png)')
+err_pattern = re.compile(r'Error - (.+)')
 
 def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, num_jobs):
 
@@ -41,7 +42,7 @@ def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, n
                 result = future.result()
                 print(result)
             except Exception as e:
-                print("Error: {e}")
+                print(f"Error: {e}")
                 had_errors = True
                 break
 
@@ -105,7 +106,7 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
             'LightLastScan': light_lastscan,
             'HeavyFirstScan': heavy_firstscan,
             'HeavyLastScan': heavy_lastscan,
-            'XMLFile': mzml_link_path,
+            'XMLFil': mzml_link_path,
             'ChargeState': assumed_charge,
             'LightMass': light_mass,
             'HeavyMass': heavy_mass,
@@ -123,6 +124,7 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
         # Call XPressPeptideUpdateParser
         result = subprocess.run([parser_path], env={'QUERY_STRING': query_string, 'REQUEST_METHOD': 'GET'}, capture_output=True, text=True, check=True)
         # Check if the result contains 'ratio updated'
+        # print(result.stdout)
         if 'ratio updated' in result.stdout:
             # Parse the modified reduced XML file
             modified_tree = ET.parse(reduced_xml_path)
@@ -144,7 +146,8 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
             shutil.move(light_png_src, light_png_dest)
             shutil.move(heavy_png_src, heavy_png_dest)
         else:
-            raise Exception(f"error running XPressPeptideUpdateParser")
+            errors = err_pattern.findall(result.stdout)
+            raise Exception(f"error running XPressPeptideUpdateParser: {errors}")
 
         return f"{spectrum} - {response}"
 
