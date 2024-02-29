@@ -39,9 +39,9 @@ def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, n
         for i, future in enumerate(concurrent.futures.as_completed(futures)):
             try:
                 result = future.result()
-                print(f"{spectrum} - {result}")
+                print(result)
             except Exception as e:
-                print(f"{spectrum} - Error: {e}")
+                print("Error: {e}")
                 had_errors = True
                 break
 
@@ -146,7 +146,7 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
         else:
             raise Exception(f"error running XPressPeptideUpdateParser")
 
-        return response
+        return f"{spectrum} - {response}"
 
 def find_parser_path():
     # Check if XPressPeptideUpdateParser is available in PATH
