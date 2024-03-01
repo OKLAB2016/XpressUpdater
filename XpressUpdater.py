@@ -44,6 +44,7 @@ def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, n
             except Exception as e:
                 print(f"Error: {e}")
                 had_errors = True
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
     if not had_errors:
