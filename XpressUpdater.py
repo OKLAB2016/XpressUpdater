@@ -11,8 +11,9 @@ namespace = {"ns": "http://regis-web.systemsbiology.net/pepXML"}
 
 img_pattern = re.compile(r'show_tmp_pngfile\.pl\?file=(.+?\.png)')
 err_pattern = re.compile(r'Error - (.+)')
+ver_pattern = re.compile(r'(TPP v[^<]+)')
 
-def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, num_jobs):
+def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, num_jobs, debug):
 
     print("Start processing...")
 
@@ -34,7 +35,7 @@ def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, n
 
             # Process each xpressratio_result in parallel
             for i, xpress_result in enumerate(xpress_results):
-                future = executor.submit(process_xpress_result, xpress_result, spectrum_query, xpressratio_summary, mzml_path, parser_path, img_dir, i + 1)
+                future = executor.submit(process_xpress_result, xpress_result, spectrum_query, xpressratio_summary, mzml_path, parser_path, img_dir, debug, i + 1)
                 futures.append(future)
 
         for i, future in enumerate(concurrent.futures.as_completed(futures)):
@@ -54,7 +55,7 @@ def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, n
         except Exception as e:
             print(f"Error: {e}")
 
-def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mzml_path, parser_path, img_dir, rank):
+def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mzml_path, parser_path, img_dir, debug, rank):
     # Extract relevant attributes from xpress_result
     light_firstscan = xpress_result.get('light_firstscan')
     light_lastscan = xpress_result.get('light_lastscan')
@@ -78,7 +79,8 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
     # Create a temporary directory to store the reduced XML file
     # temp_dir = tempfile.mkdtemp()
     
-    os.makedirs(img_dir, exist_ok=True)
+    if img_dir:
+        os.makedirs(img_dir, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         reduced_xml_path = os.path.join(temp_dir, "reduced_xml_to_modify.xml")
@@ -116,17 +118,20 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
             'NumIsotopePeaks': min_num_isotope_peaks,
             'index': index,
             'xmlfile': reduced_xml_path,
-            'FileOut': spectrum,
+            'FileOut': spectrum, # TPP v. 5
+            'OutFile': spectrum, # TPP v. 6
             'bXpressLight1': xpress_light
         }
         query['overwrite'] = '1'
+        query['no_images'] = '0' if img_dir else '1' # for custom versions supporting this
         query_string = '&'.join(['{}={}'.format(k,v) for k,v in query.items()])
 
         # Call XPressPeptideUpdateParser
         result = subprocess.run([parser_path], env={'QUERY_STRING': query_string, 'REQUEST_METHOD': 'GET'}, capture_output=True, text=True, check=True)
         # Check if the result contains 'ratio updated'
-        # print(result.stdout)
-        if 'ratio updated' in result.stdout:
+        if (debug):
+            print(result.stdout)
+        if 'ratio updated' in result.stdout or 'Ratio updated' in result.stdout:
             # Parse the modified reduced XML file
             modified_tree = ET.parse(reduced_xml_path)
             modified_root = modified_tree.getroot()
@@ -141,11 +146,12 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
 
             response = f"ratio updated from {decimal_ratio} to {new_decimal_ratio}"
 
-            light_png_src, heavy_png_src = img_pattern.findall(result.stdout)
-            light_png_dest = os.path.join(img_dir, f"{spectrum}_{rank}_0.png")
-            heavy_png_dest = os.path.join(img_dir, f"{spectrum}_{rank}_1.png")
-            shutil.move(light_png_src, light_png_dest)
-            shutil.move(heavy_png_src, heavy_png_dest)
+            if img_dir:
+                light_png_src, heavy_png_src = img_pattern.findall(result.stdout)
+                light_png_dest = os.path.join(img_dir, f"{spectrum}_{rank}_0.png")
+                heavy_png_dest = os.path.join(img_dir, f"{spectrum}_{rank}_1.png")
+                shutil.move(light_png_src, light_png_dest)
+                shutil.move(heavy_png_src, heavy_png_dest)
         else:
             errors = err_pattern.findall(result.stdout)
             raise Exception(f"error running XPressPeptideUpdateParser: {errors}")
@@ -173,9 +179,10 @@ def main():
     parser.add_argument('--input', help='Input pep.xml file')
     parser.add_argument('--mzml', help='mzML file')
     parser.add_argument('--output', help='Output pep.xml file')
-    parser.add_argument('--img', help='Directory to save the images')
+    parser.add_argument('--img', help='Directory to save the images if wanted')
     parser.add_argument('--parser', help='Path to XPressPeptideUpdateParser.cgi')
     parser.add_argument('--jobs', default=2, type=int, help='Number of parallel jobs [2]')
+    parser.add_argument('--debug', default=False, action='store_true', help='Debugging mode')
 
     # Parse command-line arguments
     args = parser.parse_args()
@@ -186,8 +193,6 @@ def main():
         parser.error('mzML file not specified')
     if not args.output:
         parser.error('Output pep.xml file not specified')
-    if not args.img:
-        parser.error('Directory to save the images not specified')
     if not args.parser:
         args.parser = find_parser_path()
         if not args.parser:
@@ -200,8 +205,15 @@ def main():
     if not os.path.isfile(args.parser):
         parser.error('Specified path to XPressPeptideUpdateParser.cgi does not exist')
 
+    result = subprocess.run([args.parser], env={'REQUEST_METHOD': 'GET'}, capture_output=True, text=True)
+    version = ver_pattern.findall(result.stdout)
+    if not version:
+        parser.error(f'Could not run XPressPeptideUpdateParser.cgi, got:\n{result.stdout}')
+    version = version[0].strip(' :').replace('))', ')')
+    print(f"Using XPressPeptideUpdateParser.cgi from {version}")
+
     # Start processing
-    start_processing(args.input, args.mzml, args.parser, args.output, args.img, int(args.jobs))
+    start_processing(args.input, args.mzml, args.parser, args.output, args.img, int(args.jobs), args.debug)
 
 if __name__ == "__main__":
     main()
