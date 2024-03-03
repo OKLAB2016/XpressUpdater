@@ -10,7 +10,7 @@ import shutil
 namespace = {"ns": "http://regis-web.systemsbiology.net/pepXML"}
 
 img_pattern = re.compile(r'show_tmp_pngfile\.pl\?file=(.+?\.png)')
-err_pattern = re.compile(r'Error - (.+)')
+err_pattern = re.compile(r'([Ee]rror .+)')
 ver_pattern = re.compile(r'(TPP v[^<]+)')
 
 def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, num_jobs, debug):
@@ -76,12 +76,11 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
     assumed_charge = spectrum_query.get('assumed_charge')
     index = spectrum_query.get('index')
 
-    # Create a temporary directory to store the reduced XML file
-    # temp_dir = tempfile.mkdtemp()
-    
     if img_dir:
         os.makedirs(img_dir, exist_ok=True)
 
+    response = ''
+    # Create a temporary directory to store the reduced XML file
     with tempfile.TemporaryDirectory() as temp_dir:
         reduced_xml_path = os.path.join(temp_dir, "reduced_xml_to_modify.xml")
         mzml_link_path = os.path.join(temp_dir, "spectra.mzML")
@@ -156,21 +155,22 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
             errors = err_pattern.findall(result.stdout)
             raise Exception(f"error running XPressPeptideUpdateParser: {errors}")
 
-        return f"{spectrum} - {response}"
+    return f"{spectrum} - {response}"
 
 def find_parser_path():
+
+    # Check if XPressPeptideUpdateParser is in the same directory as the script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.join(script_dir, "XPressPeptideUpdateParser.cgi")
+    if os.path.isfile(candidate):
+        return candidate
+
     # Check if XPressPeptideUpdateParser is available in PATH
     for path in os.environ["PATH"].split(os.pathsep):
         candidate = os.path.join(path.strip('"'), "XPressPeptideUpdateParser.cgi")
         if os.path.isfile(candidate):
             return candidate
-    
-    # If not found in PATH, check the same directory as the script
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    candidate = os.path.join(script_dir, "XPressPeptideUpdateParser.cgi")
-    if os.path.isfile(candidate):
-        return candidate
-    
+
     return None
 
 def main():
