@@ -13,11 +13,17 @@ img_pattern = re.compile(r'show_tmp_pngfile\.pl\?file=(.+?\.png)')
 err_pattern = re.compile(r'([Ee]rror .+)')
 ver_pattern = re.compile(r'(TPP v[^<]+)')
 
-def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, num_jobs, debug):
+def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, tsv_path, num_jobs, debug):
 
     print("Start processing...")
 
     had_errors = False
+
+    if tsv_path:
+        tsv_file = open(tsv_path, 'w')
+        tsv_file.write(f"spectrum\trank\told_decimal_ratio\tlight_area\theavy_area\tdecimal_ratio\n")
+    else:
+        tsv_file = None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_jobs) as executor:
         # Parse input XML file
@@ -38,14 +44,25 @@ def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, n
                 future = executor.submit(process_xpress_result, xpress_result, spectrum_query, xpressratio_summary, mzml_path, parser_path, img_dir, debug, i + 1)
                 futures.append(future)
 
+        jobs_total = len(futures)
+        jobs_done = 0
         for i, future in enumerate(concurrent.futures.as_completed(futures)):
             try:
-                result = future.result()
-                print(result)
+                spectrum, rank, old_decimal_ratio, light_area, heavy_area, decimal_ratio = future.result()
+                jobs_done += 1
+                jobs_pct = round(jobs_done/jobs_total*100, 1)
+                print(f"{spectrum} - ratio updated from {old_decimal_ratio} to {decimal_ratio} - {jobs_pct}%")
+                if tsv_file:
+                    tsv_file.write(f"{spectrum}\t{rank}\t{old_decimal_ratio}\t{light_area}\t{heavy_area}\t{decimal_ratio}\n")
             except Exception as e:
                 print(f"Error: {e}")
                 had_errors = True
-                executor.shutdown(wait=False, cancel_futures=True)
+                executor.shutdown(wait=False)
+                for f in futures:
+                    if not f.done():
+                        f.cancel()
+                if tsv_file:
+                    tsv_file.close()
                 break
 
     if not had_errors:
@@ -54,6 +71,9 @@ def start_processing(input_path, mzml_path, parser_path, output_path, img_dir, n
             print("Processing complete.")
         except Exception as e:
             print(f"Error: {e}")
+
+    if tsv_file and not tsv_file.closed:
+        tsv_file.close()
 
 def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mzml_path, parser_path, img_dir, debug, rank):
     # Extract relevant attributes from xpress_result
@@ -64,7 +84,7 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
     light_mass = xpress_result.get('light_mass')
     heavy_mass = xpress_result.get('heavy_mass')
     mass_tol = xpress_result.get('mass_tol')
-    decimal_ratio = xpress_result.get('decimal_ratio')
+    old_decimal_ratio = xpress_result.get('decimal_ratio')
 
     # Extract ppmtol, min_num_isotope_peaks, and xpress_light from xpressratio_summary
     ppmtol = xpressratio_summary.get('ppmtol')
@@ -79,7 +99,7 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
     if img_dir:
         os.makedirs(img_dir, exist_ok=True)
 
-    response = ''
+    light_area = heavy_area = decimal_ratio = None
     # Create a temporary directory to store the reduced XML file
     with tempfile.TemporaryDirectory() as temp_dir:
         reduced_xml_path = os.path.join(temp_dir, "reduced_xml_to_modify.xml")
@@ -136,14 +156,14 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
             modified_root = modified_tree.getroot()
             modified_xpress_result = modified_root.find('.//xpressratio_result')
 
-            new_decimal_ratio = modified_xpress_result.get('decimal_ratio')
+            decimal_ratio = modified_xpress_result.get('decimal_ratio')
+            light_area = modified_xpress_result.get('light_area')
+            heavy_area = modified_xpress_result.get('heavy_area')
 
             # Update the original XML file with the modified values
             for attrib in modified_xpress_result.attrib:
                 xpress_result.set(attrib, modified_xpress_result.get(attrib))
-            xpress_result.set("heavy2light_ratio", f"1:{new_decimal_ratio}")
-
-            response = f"ratio updated from {decimal_ratio} to {new_decimal_ratio}"
+            xpress_result.set("heavy2light_ratio", f"1:{decimal_ratio}")
 
             if img_dir:
                 light_png_src, heavy_png_src = img_pattern.findall(result.stdout)
@@ -155,7 +175,7 @@ def process_xpress_result(xpress_result, spectrum_query, xpressratio_summary, mz
             errors = err_pattern.findall(result.stdout)
             raise Exception(f"error running XPressPeptideUpdateParser: {errors}")
 
-    return f"{spectrum} - {response}"
+    return spectrum, rank, old_decimal_ratio, light_area, heavy_area, decimal_ratio
 
 def find_parser_path():
 
@@ -179,6 +199,7 @@ def main():
     parser.add_argument('--input', help='Input pep.xml file')
     parser.add_argument('--mzml', help='mzML file')
     parser.add_argument('--output', help='Output pep.xml file')
+    parser.add_argument('--tsv', help='Save ratios in the tsv file')
     parser.add_argument('--img', help='Directory to save the images if wanted')
     parser.add_argument('--parser', help='Path to XPressPeptideUpdateParser.cgi')
     parser.add_argument('--jobs', default=2, type=int, help='Number of parallel jobs [2]')
@@ -213,7 +234,7 @@ def main():
     print(f"Using XPressPeptideUpdateParser.cgi from {version}")
 
     # Start processing
-    start_processing(args.input, args.mzml, args.parser, args.output, args.img, int(args.jobs), args.debug)
+    start_processing(args.input, args.mzml, args.parser, args.output, args.img, args.tsv, int(args.jobs), args.debug)
 
 if __name__ == "__main__":
     main()
